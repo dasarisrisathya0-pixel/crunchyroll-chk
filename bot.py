@@ -185,7 +185,13 @@ def handle_docs(message):
         reply_markup=create_status_keyboard(results)
     )
 
+    # IMPORTANT: We add a flag to stop the loop if IP is blocked
+    ip_blocked = False
+
     for combo in combos:
+        if ip_blocked:
+            break  # Stop processing completely if IP is blocked
+
         try:
             email, password = combo.strip().split(':')
             result = check_crunchyroll_account(email, password)
@@ -217,8 +223,10 @@ def handle_docs(message):
 [ ⌁ ] By : @noobpirate
     """)
             elif result == 'block':
-                bot.send_message(message.chat.id, text="Sorry, we have to wait 5m due to IP block.")
-                time.sleep(360)
+                bot.send_message(message.chat.id, text="🚫 IP Blocked! Stopping the check process. Please wait 5-10 minutes and try again with a smaller batch.")
+                ip_blocked = True
+                break  # Stop the loop immediately
+                
             else:
                 results['bad'] += 1
                 
@@ -235,6 +243,13 @@ def handle_docs(message):
         except Exception as e:
             print(f"Error processing combo: {e}")
             continue
+
+    # Final update to show final results
+    bot.edit_message_reply_markup(
+        message.chat.id,
+        status_message.message_id,
+        reply_markup=create_status_keyboard(results)
+    )
 
 @bot.message_handler(commands=['chk'])
 def handle_chk(message):
