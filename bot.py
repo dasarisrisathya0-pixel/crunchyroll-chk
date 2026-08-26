@@ -10,7 +10,7 @@ API_TOKEN = '{8705949010:AAFxN5dwqh1pQGr-XdayCEthJugo8_neskM}'  # Replace with y
 bot = telebot.TeleBot(8705949010:AAFxN5dwqh1pQGr-XdayCEthJugo8_neskM)
 
 # List of Admin IDs - Replace with actual admin chat IDs
-Admins = ['6024704351', '6024704351']  # Replace these with your actual admin chat IDs
+Admins = ['6024704351']  # Replace these with your actual admin chat IDs
 
 def check_crunchyroll_account(email, password):
     device_id = ''.join(random.choice('0123456789abcdef') for _ in range(32))
