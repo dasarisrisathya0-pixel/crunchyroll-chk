@@ -2,14 +2,18 @@ import telebot
 import requests
 import time
 import json
+import os
+import threading
+import http.server
 from datetime import datetime, timedelta
 import random
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 
-API_TOKEN = '8705949010:AAFmCQPSrVEjkWnZ5cbWysghLn1342xhVSs'
+API_TOKEN = '8705949010:AAFmCQPSrVEjkWnZ5cbWysghLn1342xhVSs'  # Replace with your actual token
 bot = telebot.TeleBot(API_TOKEN)
+
 # List of Admin IDs - Replace with actual admin chat IDs
-Admins = ['6024704351']  # Replace these with your actual admin chat IDs
+Admins = ['6024704351']  # Replace with your actual admin chat ID
 
 def check_crunchyroll_account(email, password):
     device_id = ''.join(random.choice('0123456789abcdef') for _ in range(32))
@@ -241,5 +245,26 @@ def extend_subscription(message):
     except:
         bot.send_message(message.chat.id, "Invalid format. Use /extend <subscriber_id> <days>")
 
+# ============================================
+# HEALTH CHECK SERVER FOR RENDER
+# ============================================
+class HealthCheckHandler(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.end_headers()
+        self.wfile.write(b'OK')
+    def log_message(self, format, *args):
+        pass
+
+def start_health_server():
+    port = int(os.environ.get("PORT", 8000))
+    server = http.server.HTTPServer(("0.0.0.0", port), HealthCheckHandler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+
+# ============================================
+# START THE BOT
+# ============================================
 if __name__ == '__main__':
+    start_health_server()  # Start health check server
+    print("Bot is starting...")
     bot.polling(none_stop=True)
